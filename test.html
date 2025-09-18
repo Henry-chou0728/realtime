@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8" />
+  <title>Realtime Voice Chat</title>
+  <style>
+    body { font-family: sans-serif; text-align: center; }
+    canvas { width: 400px; height: 100px; border: 1px solid #ccc; margin: 10px; }
+    .wave-container { display: flex; flex-direction: column; align-items: center; }
+  </style>
+</head>
+<body>
+  <h2>🎤 OpenAI 語音對話 (Realtime API, 繁體中文)</h2>
+  <button id="start">開始對話</button>
+  <button id="stop">結束對話</button>
+
+  <div class="wave-container">
+    <h3>你正在說話</h3>
+    <canvas id="userWave"></canvas>
+  </div>
+  <div class="wave-container">
+    <h3>AI 回應</h3>
+    <canvas id="botWave"></canvas>
+  </div>
+
+  <script>
+    let pc, micStream, audioEl;
+
+    async function startChat() {
+      const sessionResp = await fetch("/session");
+      const sessionData = await sessionResp.json();
+      const EPHEMERAL_KEY = sessionData.client_secret.value;
+
+      pc = new RTCPeerConnection();
+
+      // 1. 麥克風輸入
+      micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      micStream.getTracks().forEach(track => pc.addTrack(track, micStream));
+      visualizeAudio(micStream, document.getElementById("userWave"));
+
+      // 2. AI 語音輸出
+      audioEl = document.createElement("audio");
+      audioEl.autoplay = true;
+      pc.ontrack = event => {
+        audioEl.srcObject = event.streams[0];
+        visualizeAudio(event.streams[0], document.getElementById("botWave"));
+      };
+
+      // 建立 offer
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+
+      // 發送給 OpenAI Realtime API
+      const response = await fetch(
+        "https://api.openai.com/v1/realtime?model=gpt-4o-mini-realtime-preview",
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${EPHEMERAL_KEY}`,
+            "Content-Type": "application/sdp"
+          },
+          body: offer.sdp
+        }
+      );
+
+      const answerSDP = await response.text();
+      const answer = { type: "answer", sdp: answerSDP };
+      await pc.setRemoteDescription(answer);
+    }
+
+    function stopChat() {
+      if (pc) {
+        pc.close();
+        pc = null;
+      }
+      if (micStream) {
+        micStream.getTracks().forEach(track => track.stop());
+      }
+    }
+
+    document.getElementById("start").onclick = startChat;
+    document.getElementById("stop").onclick = stopChat;
+
+    // 🎵 音訊可視化 (波形)
+    function visualizeAudio(stream, canvas) {
+      const audioCtx = new AudioContext();
+      const source = audioCtx.createMediaStreamSource(stream);
+      const analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 256;
+
+      source.connect(analyser);
+
+      const bufferLength = analyser.frequencyBinCount;
+      const dataArray = new Uint8Array(bufferLength);
+
+      const ctx = canvas.getContext("2d");
+
+      function draw() {
+        requestAnimationFrame(draw);
+        analyser.getByteFrequencyData(dataArray);
+
+        ctx.fillStyle = "white";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        const barWidth = (canvas.width / bufferLength) * 2.5;
+        let x = 0;
+        for (let i = 0; i < bufferLength; i++) {
+          const barHeight = dataArray[i] / 2;
+          ctx.fillStyle = "rgb(50,150,250)";
+          ctx.fillRect(x, canvas.height - barHeight, barWidth, barHeight);
+          x += barWidth + 1;
+        }
+      }
+      draw();
+    }
+  </script>
+</body>
+</html>
